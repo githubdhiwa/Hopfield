@@ -11,15 +11,11 @@ NOISY_DIR = 'noisy'
 print('Choose learning rule:')
 print('1) One-shot (Hebbian, all patterns at once)')
 print('2) Incremental (cycle through all patterns each epoch)')
-print('3) Deep narrow well (randomized, selective update)')
-print('4) Sequential incremental (train on one pattern until convergence, then next)')
+print('3) Incremental with sleep')
+print('4) Single pattern with sleep')
 rule_choice = input('Enter 1, 2, 3, or 4: ').strip()
 
-LEARNING_RATE = 0.3
-
-if rule_choice == '3':
-    kappa = float(input('Enter kappa for deep-narrow (e.g., 56): '))
-    n_samples = int(input('Enter # random samples per pattern (e.g., 300): '))
+LEARNING_RATE = 0.1
 
 class HopfieldNetwork:
     def __init__(self, size):
@@ -34,7 +30,7 @@ class HopfieldNetwork:
             self.W += outer
         np.fill_diagonal(self.W, 0)
 
-    def train_incremental(self, patterns, n=LEARNING_RATE, max_epochs=100, epsilon=1e-3, n_samples=1000, kappa=100):
+    def train_incremental(self, patterns, n=0.1, max_epochs=100, epsilon=1e-3):
         for epoch in range(max_epochs):
             W_old = self.W.copy()
             for p in patterns:
@@ -42,94 +38,136 @@ class HopfieldNetwork:
                 outer = (p @ p.T) / self.size
                 self.W = (1 - n) * self.W + n * outer
                 np.fill_diagonal(self.W, 0)
-
-                p_flat = p.flatten()
-                x = np.random.choice([-1, 1], size=(self.size,))
-                # dot_prod = np.dot(x, p_flat)
-                for _ in range(n_samples):
-                    
-                    delta_E = E_new - E_old
-
             delta = np.max(np.abs(self.W - W_old))
+            if delta < epsilon:
+                print(f'Incremental converged after {epoch+1} epochs (Δmax={delta:.2e})')
+                break
 
-            # if delta < epsilon:
-            #     print(f'Incremental converged after {epoch+1} epochs (Δmax={delta:.2e})')
-            #     break
+    def train_incremental_with_sleep(self,
+                                     patterns,
+                                     n=0.1,
+                                     n_sleep=0.01,
+                                     max_epochs=50,
+                                     sleep_iterations=100,
+                                     epsilon=1e-3,
+                                     k=0.25):
+        def heaviside(u):
+            return 1.0 if u > 0 else 0.0
 
-    def train_deep_narrow(self, patterns, kappa, n_samples, max_epochs=100, epsilon=1e-3, n=LEARNING_RATE):
-        for i, p in enumerate(patterns):
-            p = p.reshape(-1, 1)
-            p_flat = p.flatten()
-            print(f'\n--- Deep-Narrow: training pattern {i} ---')
-            for epoch in range(max_epochs):
-                W_old = self.W.copy()
-                sum_updates = np.zeros_like(self.W)
-                hits = 0
-                for _ in range(n_samples):
-                    x = np.random.choice([-1, 1], size=(self.size,))
-                    dot_prod = np.dot(x, p_flat)
-                    if dot_prod > kappa:
-                        outer = (p @ p.T) / self.size
-                        sum_updates += outer
-                        hits += 1
-                if hits > 0:
-                    avg_update = sum_updates / hits
-                    self.W = (1 - n) * self.W + n * avg_update
-                    np.fill_diagonal(self.W, 0)
-                delta = np.max(np.abs(self.W - W_old))
-                print(f'[Pattern {i}] Epoch {epoch+1:3d} | hits = {hits:4d} | ΔW_max = {delta:.2e}')
-                if delta < epsilon:
-                    print(f'→ Converged on pattern {i} after {epoch+1} epochs (hits={hits})')
-                    break
-            else:
-                print(f'→ Reached max_epochs ({max_epochs}) on pattern {i} without full convergence')
+        def hopfield_energy(x_vec, W_mat, p_vec, k_val):
+            e_hop = -0.5 * x_vec.T.dot(W_mat).dot(x_vec)
+            h_factor = heaviside(x_vec.T.dot(p_vec) / self.size - k_val)
+            return e_hop * h_factor
 
-    def train_sequential_incremental(self, patterns, n=LEARNING_RATE, max_epochs=100, epsilon=1e-3):
-        for i, p in enumerate(patterns):
-            p = p.reshape(-1, 1)
-            print(f'\n--- Sequential Incremental: training pattern {i} ---')
-            for epoch in range(max_epochs):
-                W_old = self.W.copy()
-                outer = (p @ p.T) / self.size
+        N = self.size
+        P = patterns.shape[0]
+
+        for epoch in range(max_epochs):
+            W_before = self.W.copy()
+            for p_idx in range(P):
+                p = patterns[p_idx].reshape(-1, 1)
+                outer = (p @ p.T) / N
                 self.W = (1 - n) * self.W + n * outer
                 np.fill_diagonal(self.W, 0)
-                delta = np.max(np.abs(self.W - W_old))
-                if delta < epsilon:
-                    print(f'[Pattern {i}] Converged after {epoch+1} epochs (Δmax={delta:.2e})')
-                    break
-            else:
-                print(f'[Pattern {i}] Did NOT converge within {max_epochs} epochs (Δmax={delta:.2e})')        
-    
-    def train_With_sleep(self, patterns, kappa, n_samples, max_epochs=100, epsilon=1e-3, n_wake=LEARNING_RATE, n_sleep=LEARNING_RATE):
-        for i, p in enumerate(patterns):
-            # Wake
-            p = p.reshape(-1, 1)
-            for epoch in range(max_epochs):
-                W_old = self.W.copy()
-                outer = (p @ p.T) / self.size
-                self.W = (1 - n_wake) * self.W + n_wake * outer
-                np.diagonal(self.W, 0)
-                delta = np.max(np.abs(self.W - W_old))
-                if delta < epsilon:
-                    break 
-            # Sleep
-            p_flat = p.flatten()
-            for epoch in range(max_epochs):
-                W_old = self.W.copy()
-                sum_updates = np.zeros_like(self.W)
-                hits = 0
-                for _ in range(n_samples):
-                    x = np.random.choice([-1, 1], size=(self.size,))
-                    dot_prod = np.dot(x, p_flat)
-                    if dot_prod > kappa:
-                        outer = (p @ p.T) / self.size 
-                        sum_updates += outer
-                        hits += 1
-                self.W = (1 - n_sleep) * self.W + n_sleep * sum_updates
+
+                x = np.random.choice([-1, +1], size=(N,), replace=True)
+
+                for it in range(sleep_iterations):
+                    i = np.random.randint(0, N)
+                    x_new = x.copy()
+                    x_new[i] = -x_new[i]
+
+                    E_old = hopfield_energy(x,     self.W, p.flatten(), k)
+                    E_new = hopfield_energy(x_new, self.W, p.flatten(), k)
+                    delta_E = E_new - E_old
+
+                    Temp = 0.1 * hopfield_energy(p, self.W, p.flatten(), k) + 1e-10
+
+                    if (delta_E < 0) or (np.random.rand() < np.exp(-delta_E / Temp)):
+                        x = x_new 
+                        outer_x = np.outer(x, x) / N
+                        self.W = (1 - n_sleep) * self.W + n_sleep * outer_x
+                        np.fill_diagonal(self.W, 0)
+
+            max_change = np.max(np.abs(self.W - W_before))
+            if max_change < epsilon:
+                print(f'Inc‐with‐sleep converged after {epoch+1} epochs (Δmax={max_change:.2e})')
+                break
+
+    def train_single_pattern_with_sleep(self,
+                                        pattern,
+                                        n=0.1,
+                                        n_sleep=0.07,
+                                        max_epochs=10,
+                                        sleep_iterations=1000,
+                                        epsilon=1e-3,
+                                        k=0.25,
+                                        n_trials=10000,
+                                        max_steps=100):
+        N = self.size
+        p = pattern.reshape(-1, 1)
+
+        self.W = (p @ p.T) / N
+        np.fill_diagonal(self.W, 0)
+
+        def iterations_to_converge(W_mat, x_init, max_steps):
+            x = x_init.copy()
+            for step in range(1, max_steps + 1):
+                x_new = np.sign(W_mat @ x)
+                x_new[x_new == 0] = 1
+                if np.array_equal(x_new, x):
+                    return step
+                x = x_new
+            return max_steps
+
+        pre_iters = []
+        for _ in range(n_trials):
+            x0 = np.random.choice([-1, 1], size=(N,), replace=True)
+            iters = iterations_to_converge(self.W, x0, max_steps)
+            pre_iters.append(iters)
+        avg_pre = np.mean(pre_iters)
+        print(f'Average iterations to converge (pre‐sleep) over {n_trials} trials: {avg_pre:.2f}')
+
+        def heaviside(u):
+            return 1.0 if u > 0 else 0.0
+
+        def hopfield_energy(x_vec, W_mat, p_vec, k_val):
+            e_hop = -0.5 * x_vec.T.dot(W_mat).dot(x_vec)
+            h_factor = heaviside((x_vec.T.dot(p_vec)) / N - k_val)
+            return e_hop * h_factor
+
+        p_vec = p.flatten()
+        x = np.random.choice([-1, 1], size=(N,), replace=True)
+
+        for it in range(sleep_iterations):
+            i = np.random.randint(0, N)
+            x_new = x.copy()
+            x_new[i] = -x_new[i]
+
+            E_old = hopfield_energy(x,     self.W, p_vec, k)
+            E_new = hopfield_energy(x_new, self.W, p_vec, k)
+            delta_E = E_new - E_old
+
+            Temp = 0.1 * hopfield_energy(p_vec, self.W, p_vec, k) + 1e-10
+
+            if (delta_E < 0) or (np.random.rand() < np.exp(-delta_E / Temp)):
+                x = x_new
+                outer_x = np.outer(x, x) / N
+                self.W = (1 - n_sleep) * self.W + n_sleep * outer_x
                 np.fill_diagonal(self.W, 0)
-                delta = np.max(np.abs(self.W - W_old))
-                if delta < epsilon:
-                    break 
+
+        post_iters = []
+        for _ in range(n_trials):
+            x0 = np.random.choice([-1, 1], size=(N,), replace=True)
+            iters = iterations_to_converge(self.W, x0, max_steps)
+            post_iters.append(iters)
+        avg_post = np.mean(post_iters)
+        print(f'Average iterations to converge (post‐sleep) over {n_trials} trials: {avg_post:.2f}')
+
+        print(f'\nComparison:')
+        print(f'  Pre‐sleep average convergence steps:  {avg_pre:.2f}')
+        print(f'  Post‐sleep average convergence steps: {avg_post:.2f}')
+
 
     def recall(self, pattern, steps=5):
         s = pattern.copy()
@@ -180,19 +218,15 @@ elif rule_choice == '2':
     print('\nUsing incremental Hebbian rule.')
     hopfield.train_incremental(np.array(clean_patterns), n=LEARNING_RATE)
 
-elif rule_choice == '3':
-    print('\nUsing deep-narrow well rule.')
-    hopfield.train_deep_narrow(np.array(clean_patterns),
-                               kappa=kappa,
-                               n_samples=n_samples,
-                               max_epochs=100,
-                               epsilon=1e-3,
-                               n=LEARNING_RATE)
-
-else:
-    print('\nUsing sequential incremental rule.')
-    hopfield.train_sequential_incremental(np.array(clean_patterns),
+if rule_choice == '3':
+    print('\nUsing incremental with sleep rule.')
+    hopfield.train_incremental_with_sleep(np.array(clean_patterns),
                                           n=LEARNING_RATE)
+
+if rule_choice == '4':
+    print('\nUsing single pattern with sleep rule.')
+    hopfield.train_single_pattern_with_sleep(clean_patterns[0],
+                                             n=LEARNING_RATE)
 
 print('\nAvailable noisy images (only for trained digits):')
 noisy_files = sorted([
